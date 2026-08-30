@@ -189,6 +189,395 @@ test('empty-key change copy describes omission without claiming a musical deleti
   assert.doesNotMatch(formatters.plannedRepairChange(change), /remove|musical position/i);
 });
 
+test('repeated measure-marker formatters describe the exact marker and member scope', () => {
+  const formatters = createFormatters({ number: (value) => String(value) });
+  const change = {
+    action_kind: 'normalize_repeated_measure_markers',
+    change_kind: 'normalize_measure_markers',
+    change_count: 12,
+    member_count: 3,
+    item_name: 'measure marker',
+  };
+
+  assert.equal(
+    formatters.plannedRepairChange(change),
+    'change 12 repeated positive measure markers to the sub-beat marker -1',
+  );
+  assert.equal(
+    formatters.completedRepairChange(change),
+    'Changed 12 repeated positive measure markers to the sub-beat marker -1 across 3 song-data files while preserving every beat timestamp, beat order, and other stored property',
+  );
+  assert.doesNotMatch(formatters.completedRepairChange(change), /fret 0|remove/i);
+});
+
+test('repeated measure-marker finding, preview, result, and Undo show exact safe changes', async (t) => {
+  const code = 'timeline.repeated-measure-markers';
+  const definition = {
+    rule_code: code,
+    action_kind: 'normalize_repeated_measure_markers',
+    source_kind: 'timeline',
+    safety: 'safe_automatic',
+    title: 'Repeated measure markers on later beats',
+    change_kind: 'normalize_measure_markers',
+    item_name: 'measure marker',
+  };
+  const report = {
+    package: 'RepeatedMeasures.feedpak',
+    title: 'Repeated Measures',
+    artist: 'Test Artist',
+    counts: { error: 0, warning: 2, info: 0 },
+    features: {
+      preview_declared: true,
+      repair_scan_current: true,
+      repair_eligibility: { [code]: { status: 'automatic' } },
+    },
+    findings: [
+      {
+        code,
+        severity: 'warning',
+        category: 'feedback_compatibility',
+        message: 'Six later beats repeat a positive measure marker.',
+        affected_count: 6,
+        location: 'song_timeline.json:beats[1]',
+        rule: { title: definition.title },
+      },
+      {
+        code,
+        severity: 'warning',
+        category: 'feedback_compatibility',
+        message: 'Six later beats repeat a positive measure marker.',
+        affected_count: 6,
+        location: 'lead.json:beats[1]',
+        rule: { title: definition.title },
+      },
+    ],
+  };
+  const target = { kind: 'folder', label: 'staging' };
+  const app = await launchLibraryDoctor({
+    status: {
+      stage: 'idle',
+      running: false,
+      scan_current: true,
+      target,
+      summary: { total: 1, errors: 0, warnings: 1, reviews: 0 },
+      last_scan: { complete: true, target },
+    },
+    repairs: {
+      schema: 'library_doctor.repair_catalog.v1',
+      combined: null,
+      items: [definition],
+    },
+    results: { total: 1, items: [report] },
+    route(request) {
+      if (request.key === '/api/plugins/library_doctor/repair/preview') {
+        return jsonResponse({
+          available: true,
+          plan_id: 'measure-plan-1',
+          title: definition.title,
+          description: 'Only proven later repeats of a positive measure marker will change.',
+          action_kind: definition.action_kind,
+          change_kind: definition.change_kind,
+          change_count: 12,
+          removed_count: 0,
+          musical_positions: 12,
+          member_count: 2,
+          arrays_affected: 2,
+          item_name: definition.item_name,
+          player_result: 'Only real measure starts retain numbered highway markers.',
+          user_value: 'Empty highway sections no longer show crowded fret numbers.',
+          file_handling: { summary: 'A validated candidate and Undo recovery protect the change.' },
+        });
+      }
+      if (request.key === '/api/plugins/library_doctor/repair/apply') {
+        return jsonResponse({
+          applied: true,
+          outcome: 'success',
+          backup_id: '20260830-120000-measuremarkers',
+          undo_available: true,
+          rule_code: code,
+          action_kind: definition.action_kind,
+          change_kind: definition.change_kind,
+          change_count: 12,
+          removed_count: 0,
+          musical_positions: 12,
+          member_count: 2,
+          item_name: definition.item_name,
+          player_result: 'Only real measure starts retain numbered highway markers.',
+          user_value: 'Empty highway sections no longer show crowded fret numbers.',
+          file_handling: { summary: 'The exact original song data remains available to Undo.' },
+          report: { title: report.title, artist: report.artist },
+        });
+      }
+      if (request.key === '/api/plugins/library_doctor/repair/restore') {
+        return jsonResponse({
+          action: 'restore',
+          outcome: 'restored',
+          package: report.package,
+          title: report.title,
+          artist: report.artist,
+          backup_id: '20260830-120000-measuremarkers',
+          rule_code: code,
+          action_kind: definition.action_kind,
+          change_kind: definition.change_kind,
+          change_count: 12,
+          removed_count: 0,
+          musical_positions: 12,
+          member_count: 2,
+          item_name: definition.item_name,
+          file_handling: {
+            summary: 'The exact original song data was restored.',
+            backup_removed: true,
+          },
+        });
+      }
+      return null;
+    },
+  });
+  t.after(() => app.close());
+
+  const group = app.document.querySelector('.lh-finding-repair-group');
+  assert.match(group.textContent, /12 repeated positive measure markers appear on later beats/i);
+  assert.match(group.textContent, /across 2 source files/i);
+  assert.match(group.textContent, /sub-beat marker -1/i);
+  assert.match(group.textContent, /every beat timestamp, beat order/i);
+
+  buttonWithText(group, 'Review safe fix').click();
+  await waitFor(() => group.querySelector('.lh-repair-card'), 'measure-marker repair preview');
+  const preview = group.querySelector('.lh-repair-card');
+  assert.match(preview.textContent, /Change 12 repeated positive measure markers/i);
+  assert.match(preview.textContent, /sub-beat marker -1 across 2 song-data files/i);
+  assert.match(preview.textContent, /first measure marker.*every beat timestamp/i);
+  assert.doesNotMatch(preview.textContent, /fret 0|redundant stored/i);
+
+  buttonWithText(preview, 'Apply safe repair').click();
+  await waitFor(
+    () => app.document.querySelector('#lh-repair-result')?.dataset.outcome === 'success',
+    'measure-marker success result',
+  );
+  const success = app.document.querySelector('#lh-repair-result');
+  assert.match(success.textContent, /Changed 12 repeated positive measure markers/i);
+  assert.match(success.textContent, /sub-beat marker -1 across 2 song-data files/i);
+  assert.match(success.textContent, /preserving every beat timestamp, beat order/i);
+
+  buttonWithText(success, 'Undo repair').click();
+  const undo = app.document.querySelector('.lh-repair-confirm');
+  assert.match(undo.textContent, /restore 12 original repeated positive measure-marker values/i);
+  assert.match(undo.textContent, /across 2 song-data files/i);
+  assert.match(undo.textContent, /every beat timestamp/i);
+  buttonWithText(undo, 'Restore original song data').click();
+  await waitFor(
+    () => app.document.querySelector('#lh-repair-result')?.dataset.outcome === 'restored',
+    'measure-marker restored result',
+  );
+  const restored = app.document.querySelector('#lh-repair-result');
+  assert.match(restored.textContent, /Restored 12 original repeated positive measure-marker values/i);
+  assert.match(restored.textContent, /across 2 song-data files/i);
+  assert.match(restored.textContent, /finding is expected to return/i);
+});
+
+test('Fix All and batch outcomes retain repeated measure-marker counts and meaning', async (t) => {
+  const measureCode = 'timeline.repeated-measure-markers';
+  const duplicateCode = 'timeline.duplicate-beat';
+  const measureDefinition = {
+    rule_code: measureCode,
+    action_kind: 'normalize_repeated_measure_markers',
+    source_kind: 'timeline',
+    safety: 'safe_automatic',
+    title: 'Repeated measure markers on later beats',
+    change_kind: 'normalize_measure_markers',
+    item_name: 'measure marker',
+  };
+  const duplicateDefinition = {
+    rule_code: duplicateCode,
+    action_kind: 'remove_duplicate_beats',
+    source_kind: 'timeline',
+    safety: 'safe_automatic',
+    title: 'Duplicate beat',
+    change_kind: 'remove_duplicates',
+    item_name: 'beat',
+  };
+  const target = { kind: 'folder', label: 'staging' };
+  const report = {
+    package: 'Combined.feedpak',
+    title: 'Combined',
+    artist: 'Test Artist',
+    counts: { error: 0, warning: 2, info: 0 },
+    features: {
+      preview_declared: true,
+      repair_scan_current: true,
+      repair_eligibility: {
+        [measureCode]: { status: 'automatic' },
+        [duplicateCode]: { status: 'automatic' },
+      },
+    },
+    findings: [
+      {
+        code: measureCode,
+        severity: 'warning',
+        category: 'feedback_compatibility',
+        message: 'Repeated measure markers were found.',
+        affected_count: 12,
+        location: 'song_timeline.json:beats[1]',
+        rule: { title: measureDefinition.title },
+      },
+      {
+        code: duplicateCode,
+        severity: 'warning',
+        category: 'validation',
+        message: 'A duplicate beat was found.',
+        affected_count: 1,
+        location: 'song_timeline.json:beats[20]',
+        rule: { title: duplicateDefinition.title },
+      },
+    ],
+  };
+  const fixAllApp = await launchLibraryDoctor({
+    status: {
+      stage: 'idle',
+      running: false,
+      scan_current: true,
+      target,
+      summary: { total: 1, errors: 0, warnings: 2, reviews: 0 },
+      last_scan: { complete: true, target },
+    },
+    repairs: {
+      schema: 'library_doctor.repair_catalog.v1',
+      combined: { title: 'Fix all safe issues' },
+      items: [measureDefinition, duplicateDefinition],
+    },
+    results: { total: 1, items: [report] },
+    route(request) {
+      if (request.key === '/api/plugins/library_doctor/repair/all/preview') {
+        return jsonResponse({
+          available: true,
+          plan_id: 'all-plan-1',
+          title: 'Fix all safe issues',
+          rule_count: 2,
+          change_kind: 'combined',
+          change_count: 13,
+          member_count: 3,
+          repair_summaries: [
+            {
+              ...measureDefinition,
+              change_count: 12,
+              member_count: 2,
+            },
+            {
+              ...duplicateDefinition,
+              change_count: 1,
+              removed_count: 1,
+              member_count: 1,
+            },
+          ],
+          player_result: 'Both safe timeline issues are resolved.',
+          user_value: 'The repaired package uses unambiguous timeline data.',
+          file_handling: { summary: 'One validated candidate and Undo recovery protect both fixes.' },
+        });
+      }
+      return null;
+    },
+  });
+  t.after(() => fixAllApp.close());
+
+  buttonWithText(fixAllApp.document, 'Review all safe fixes').click();
+  await waitFor(
+    () => fixAllApp.document.querySelector('.lh-all-safe-card'),
+    'combined measure-marker preview',
+  );
+  const combined = fixAllApp.document.querySelector('.lh-all-safe-card');
+  assert.match(combined.textContent, /13 safe stored changes across 3 song-data files/i);
+  assert.match(combined.textContent, /change 12 repeated positive measure markers/i);
+  assert.match(combined.textContent, /sub-beat marker -1 across 2 song-data files/i);
+
+  const batchApp = await launchLibraryDoctor({
+    status: {
+      stage: 'idle',
+      running: false,
+      repairing: false,
+      scan_current: true,
+      target,
+      summary: { total: 1, errors: 0, warnings: 0, reviews: 0 },
+      last_scan: { complete: true, target },
+      batch: {
+        phase: 'completed',
+        running: false,
+        result: {
+          id: 'measure-batch-result',
+          outcome: 'complete',
+          completed_count: 1,
+          successful_count: 1,
+          remaining_count: 0,
+          failed_count: 0,
+          skipped_count: 0,
+          currently_repaired_count: 1,
+          restored_count: 0,
+          finalized_count: 0,
+          undoable_count: 1,
+          recovery_summary: 'One repair can be undone.',
+          outcomes: [{
+            package: 'RepeatedMeasures.feedpak',
+            title: 'Repeated Measures',
+            artist: 'Test Artist',
+            outcome: 'success',
+            backup_id: 'batch-measure-backup',
+            undo_available: true,
+            action_kind: measureDefinition.action_kind,
+            change_kind: measureDefinition.change_kind,
+            change_count: 12,
+            member_count: 2,
+            item_name: measureDefinition.item_name,
+          }],
+        },
+      },
+    },
+  });
+  t.after(() => batchApp.close());
+  const batchResult = batchApp.document.querySelector('#lh-batch-result');
+  assert.match(batchResult.textContent, /Changed 12 repeated positive measure markers/i);
+  assert.match(batchResult.textContent, /sub-beat marker -1 across 2 song-data files/i);
+
+  const batchUndoApp = await launchLibraryDoctor({
+    status: {
+      stage: 'idle',
+      running: false,
+      repairing: false,
+      scan_current: true,
+      target,
+      summary: { total: 1, errors: 0, warnings: 1, reviews: 0 },
+      last_scan: { complete: true, target },
+      batch: {
+        phase: 'undo_completed',
+        running: false,
+        undo_result: {
+          id: 'measure-batch-undo-result',
+          outcome: 'complete',
+          completed_count: 1,
+          remaining_count: 0,
+          restored_count: 1,
+          skipped_count: 0,
+          failed_count: 0,
+          restored_change_count: 12,
+          outcomes: [{
+            package: 'RepeatedMeasures.feedpak',
+            title: 'Repeated Measures',
+            artist: 'Test Artist',
+            outcome: 'restored',
+            action_kind: measureDefinition.action_kind,
+            change_kind: measureDefinition.change_kind,
+            change_count: 12,
+            member_count: 2,
+          }],
+        },
+      },
+    },
+  });
+  t.after(() => batchUndoApp.close());
+  const batchUndo = batchUndoApp.document.querySelector('.lh-batch-undo-card');
+  assert.match(batchUndo.textContent, /12 original repeated positive measure-marker values were restored/i);
+  assert.match(batchUndo.textContent, /across 2 song-data files/i);
+  assert.match(batchUndo.textContent, /finding may return/i);
+});
+
 test('grouped empty-key findings explain the non-musical omission and expose one safe action', async (t) => {
   const code = 'chart.empty-phrases-key';
   const definition = {

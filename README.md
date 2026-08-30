@@ -258,7 +258,7 @@ contributors, and anyone who wants to inspect the safety boundaries.
 
 ## Safe repairs
 
-The automatic-safe song-data catalog contains 24 rule-specific repair actions.
+The automatic-safe song-data catalog contains 25 rule-specific repair actions.
 The repair allowlist removes exact duplicate standalone notes, members inside
 one chord, complete chord events, anchors, handshapes, beat markers, section
 markers, and drum hits. It can also remove a standalone note that exactly
@@ -285,17 +285,29 @@ every word, duration, unknown future property, and the authored order between
 equal-time cues is preserved. A timeline that also contains an invalid cue is
 blocked rather than guessed at. The primary lyrics and additional lyric tracks
 declared by the manifest use the same safeguards.
-For beats and sections, the complete song-wide timeline sidecar is repaired when
-it is the active FeedBack source. Otherwise, Library Doctor follows FeedBack's
-legacy fallback independently for each timeline type and repairs only the first
-active arrangement-embedded beat or section grid. Exact-duplicate repairs keep
-the first marker and remove only later copies whose complete stored properties
-match. Ordering repairs stable-sort every otherwise-valid marker by its existing
-time without changing any value; equal-time markers retain their authored
-relative order. For beats, validity includes time and measure; for sections it
-includes name, time, optional number, and any future properties. Markers at the
-same time with different data remain present and are never chosen between or
-deleted by the ordering repair.
+For exact-duplicate and ordering repairs, the complete song-wide timeline
+sidecar is repaired when it is the active FeedBack source. Otherwise, Library
+Doctor follows FeedBack's legacy fallback independently for beats and sections
+and repairs only the first active arrangement-embedded grid. Exact-duplicate
+repairs keep the first marker and remove only later copies whose complete stored
+properties match. Ordering repairs stable-sort every otherwise-valid marker by
+its existing time without changing any value; equal-time markers retain their
+authored relative order. For beats, validity includes time and measure; for
+sections it includes name, time, optional number, and any future properties.
+Markers at the same time with different data remain present and are never
+chosen between or deleted by the ordering repair.
+
+The `timeline.repeated-measure-markers` repair instead covers every declared
+beat-bearing copy in one atomic package change. It recognizes only the strict,
+high-confidence signature in which consecutive positive measure runs advance
+normally and at least two measure numbers repeat across later beats. The first
+positive marker is retained and each later repeat in that run becomes `-1`.
+Beat times, array lengths, ordering, unknown properties, and every other stored
+value remain unchanged. Every relevant copy must independently be eligible or
+already correct; malformed, contradictory, or ambiguous data blocks the
+complete repair rather than producing a partial result. Older FeedForge
+conversions are the primary known source of this defect, but the rule is
+provenance-independent and can repair the same proven pattern from any producer.
 
 An empty root arrangement `phrases: []` property is omitted because absence is
 the format's representation for no phrase ladder. An empty root arrangement
@@ -710,9 +722,12 @@ normal in-game workflow focused on package outcomes.
 
 - `validator.py` contains the package reader and validation rules. It has no
   server or UI state and can be tested directly.
-- `repair_eligibility.py` contains the pure conditional handshape, preview,
-  and reviewed HO/PO classifiers shared by scanning and transactional repair
-  planning.
+- `repair_eligibility.py` contains the pure conditional handshape, repeated
+  measure-marker, preview, and reviewed HO/PO classifiers shared by scanning
+  and transactional repair planning.
+- `measure_marker_repair.py` owns the source-bound action planning and exact
+  application checks for repeated measure markers. It does not read or write
+  packages.
 - `reviewed_repair.py` owns the closed reviewed-repair adapter registry and
   registered decision vocabulary without performing filesystem writes.
 - `scanner.py` owns the playback-aware background scan, scope resolution,
@@ -782,9 +797,9 @@ the test dependencies and run:
 python -m pip install -r requirements-test.txt
 python -m pip check
 python -m pip_audit -r requirements.txt
-python -m ruff check validator.py scanner.py library_doctor_report_cache.py library_doctor_scan_policy.py library_doctor_scan_worker.py repair.py repair_actions.py repair_catalog.py repair_eligibility.py repair_recovery.py repair_transaction.py repair_workspace.py repair_yaml.py reviewed_repair.py preview_repair.py batch_repair.py migration.py privacy.py diagnostics.py api_contracts.py mutation_receipts.py routes.py route_support.py tools tests
+python -m ruff check validator.py scanner.py library_doctor_report_cache.py library_doctor_scan_policy.py library_doctor_scan_worker.py repair.py repair_actions.py repair_catalog.py repair_eligibility.py measure_marker_repair.py repair_recovery.py repair_transaction.py repair_workspace.py repair_yaml.py reviewed_repair.py preview_repair.py batch_repair.py migration.py privacy.py diagnostics.py api_contracts.py mutation_receipts.py routes.py route_support.py tools tests
 python -m pytest --cov --cov-report=term
-python -m py_compile validator.py scanner.py library_doctor_report_cache.py library_doctor_scan_policy.py library_doctor_scan_worker.py repair.py repair_actions.py repair_catalog.py repair_eligibility.py repair_recovery.py repair_transaction.py repair_workspace.py repair_yaml.py reviewed_repair.py preview_repair.py batch_repair.py migration.py privacy.py diagnostics.py api_contracts.py mutation_receipts.py routes.py route_support.py tools/verify_host_contract.py
+python -m py_compile validator.py scanner.py library_doctor_report_cache.py library_doctor_scan_policy.py library_doctor_scan_worker.py repair.py repair_actions.py repair_catalog.py repair_eligibility.py measure_marker_repair.py repair_recovery.py repair_transaction.py repair_workspace.py repair_yaml.py reviewed_repair.py preview_repair.py batch_repair.py migration.py privacy.py diagnostics.py api_contracts.py mutation_receipts.py routes.py route_support.py tools/verify_host_contract.py
 npm ci
 npm run audit:dependencies
 npm run check:frontend

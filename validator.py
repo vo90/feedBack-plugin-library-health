@@ -29,6 +29,7 @@ from jsonschema import Draft202012Validator
 
 try:
     from repair_eligibility import (
+        assess_repeated_measure_markers,
         assess_redundant_handshapes,
         complete_json_identity,
         effective_tones_source,
@@ -50,6 +51,9 @@ except ModuleNotFoundError:  # Tests and some plugin hosts load files by path.
         _eligibility = importlib.util.module_from_spec(_eligibility_spec)
         sys.modules[_eligibility_name] = _eligibility
         _eligibility_spec.loader.exec_module(_eligibility)
+    assess_repeated_measure_markers = (
+        _eligibility.assess_repeated_measure_markers
+    )
     assess_redundant_handshapes = _eligibility.assess_redundant_handshapes
     complete_json_identity = _eligibility.complete_json_identity
     effective_tones_source = _eligibility.effective_tones_source
@@ -66,7 +70,7 @@ except ModuleNotFoundError:  # Tests and some plugin hosts load files by path.
 
 
 SPEC_REVISION = "52548b742f64c2a35052a141976ea1b7889f4b1a"
-VALIDATOR_VERSION = f"rules-32:feedpak-{SPEC_REVISION}"
+VALIDATOR_VERSION = f"rules-33:feedpak-{SPEC_REVISION}"
 SUPPORTED_MAJOR = 1
 SCHEMA_DIR = Path(__file__).resolve().parent / "schemas"
 MAX_TEXT_BYTES = 64 * 1024 * 1024
@@ -144,6 +148,7 @@ _RULE_TITLES = {
     "lyrics.empty-text": "Lyric entry has no visible text",
     "lyrics.out-of-order": "Lyric cues out of order",
     "timeline.duplicate-beat": "Identical duplicate beat marker",
+    "timeline.repeated-measure-markers": "Measure number repeated across beats",
     "timeline.repeated-beat-time": "Repeated beat time has conflicting data",
     "timeline.duplicate-section": "Identical duplicate section marker",
     "timeline.repeated-section-time": "Repeated section time has conflicting data",
@@ -204,6 +209,7 @@ _SAFE_REPAIR_CANDIDATES = {
     "chart.bend-points-out-of-order",
     "lyrics.out-of-order",
     "timeline.duplicate-beat",
+    "timeline.repeated-measure-markers",
     "timeline.beats-out-of-order",
     "timeline.duplicate-section",
     "timeline.sections-out-of-order",
@@ -293,6 +299,10 @@ _RULE_EXPERIENCE = {
     "timeline.duplicate-beat": (
         "FeedBack can receive the same rhythm-grid instruction more than once, creating a repeated or zero-length beat interval.",
         "Keeping one identical beat marker produces a clean timing grid without changing its intended position or measure.",
+    ),
+    "timeline.repeated-measure-markers": (
+        "FeedBack can draw a numbered fret row at every beat instead of only at real measure boundaries, crowding an otherwise empty highway with fret numbers.",
+        "Keeping each real measure number once and marking only its repeated interior beats as sub-beats restores normal highway spacing without changing the beat times.",
     ),
     "timeline.repeated-beat-time": (
         "A beat time reappears after the grid has already advanced, but its stored measure data disagrees with the earlier marker.",
@@ -555,6 +565,13 @@ def rule_metadata(code: str, severity: str = "warning", category: str = "validat
         guidance = (
             "The stored beat markers are identical. Keep the first marker and "
             "remove only later exact copies; leave conflicting beat data for review."
+        )
+    elif code == "timeline.repeated-measure-markers":
+        repairability = "safe_candidate"
+        guidance = (
+            "Keep the first marker in each proven consecutive measure run and "
+            "change only its later repeated positive measure numbers to -1. "
+            "Preserve every beat time, marker, order, and unrelated property."
         )
     elif code == "timeline.duplicate-section":
         repairability = "safe_candidate"
@@ -4162,6 +4179,12 @@ def _validate_song_timeline_semantics(
         if not isinstance(items, list):
             continue
 
+        measure_assessment = (
+            assess_repeated_measure_markers(items)
+            if field == "beats"
+            else None
+        )
+
         event_predicate = {
             "tempos": repairable_tempo_event,
             "time_signatures": repairable_time_signature_event,
@@ -4301,6 +4324,46 @@ def _validate_song_timeline_semantics(
                 arrangement_id=arrangement_id,
                 time=event_time,
                 affected_count=len(repeated_time_conflicts),
+            )
+        if (
+            measure_assessment is not None
+            and measure_assessment.get("status") == "eligible"
+        ):
+            first_index = int(measure_assessment["first_index"])
+            first_time = float(measure_assessment["first_time"])
+            affected_count = int(measure_assessment["affected_count"])
+            repeated_run_count = int(
+                measure_assessment["repeated_run_count"]
+            )
+            run_label = "run" if repeated_run_count == 1 else "runs"
+            marker_label = "marker" if affected_count == 1 else "markers"
+            findings.add(
+                "warning",
+                "timeline.repeated-measure-markers",
+                (
+                    f"{affected_count} interior beat {marker_label} repeat "
+                    f"positive measure numbers across {repeated_run_count} "
+                    f"measure {run_label} in a consecutive progression; "
+                    "the first repeated marker is shown here."
+                ),
+                location=f"{relpath}:beats[{first_index}]",
+                arrangement_id=arrangement_id,
+                time=first_time,
+                affected_count=affected_count,
+            )
+            automatic, reason_code, blocker_message = (
+                _structural_stream_eligibility(
+                    relpath,
+                    items,
+                    lambda _item: True,
+                )
+            )
+            _merge_structural_repair_eligibility(
+                repair_eligibility,
+                "timeline.repeated-measure-markers",
+                automatic=automatic,
+                reason_code=reason_code,
+                message=blocker_message,
             )
         if after_duration:
             index, event_time = after_duration[0]
@@ -5461,6 +5524,7 @@ def validate_feedpak(
                         findings,
                         arrangement_id=arrangement_id,
                         fields=(field,),
+                        repair_eligibility=features["repair_eligibility"],
                     )
 
             cover = manifest.get("cover")

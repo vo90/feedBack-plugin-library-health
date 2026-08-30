@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add the origin-agnostic `timeline.repeated-measure-markers` Safe Fix for the
+  strict repeated-positive-marker pattern produced by older FeedForge versions
+  and equivalent sources. It repairs all declared beat copies atomically while
+  preserving beat timing, array shape, and all unrelated data.
+
 ## 0.45.0 — Public beta
 
 - Prevent temporary repair candidates from looking like discoverable song packages.

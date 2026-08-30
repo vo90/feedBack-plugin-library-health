@@ -31,6 +31,7 @@ def test_backend_module_ownership_and_size_boundaries_are_explicit():
         "repair.py",
         "repair_catalog.py",
         "repair_actions.py",
+        "measure_marker_repair.py",
         "repair_workspace.py",
         "repair_recovery.py",
         "repair_transaction.py",
@@ -60,6 +61,8 @@ def test_extracted_backend_boundaries_remain_wired_through_stable_seams():
     assert "_ReportCache = _report_cache.ReportCache" in scanner
     assert 'with_name("repair_actions.py")' in repair
     assert "RepairDefinition = _actions.RepairDefinition" in repair
+    assert 'with_name("measure_marker_repair.py")' in repair
+    assert "_measure_marker.apply_operation" in repair
     assert 'with_name("repair_catalog.py")' in repair
     assert "_REPAIR_DEFINITIONS = _catalog.SAFE_REPAIR_DEFINITIONS" in repair
     assert 'with_name("repair_workspace.py")' in repair

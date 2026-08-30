@@ -862,6 +862,184 @@ def complete_json_identity(value) -> bytes | None:
         return None
 
 
+def assess_repeated_measure_markers(beats) -> dict:
+    """Classify the strict repeated-measure signature without changing it.
+
+    A safe candidate contains an optional leading run of ``-1`` markers,
+    followed only by positive measure runs whose values advance by exactly
+    one.  At least two positive runs must repeat their measure number.  That
+    threshold distinguishes the known converter-shaped defect from a chart
+    that may intentionally contain one multi-beat measure among one-beat
+    measures.
+
+    ``changes`` is an immutable, JSON-serializable tuple of
+    ``(index, expected_measure, replacement_measure)`` triples.  It is empty
+    for every non-eligible status so callers cannot accidentally perform a
+    partial or speculative rewrite.
+    """
+
+    def result(
+        status: str,
+        *,
+        blocker_code: str | None = None,
+        message: str = "",
+        repeated_run_count: int = 0,
+        changes: tuple[tuple[int, int, int], ...] = (),
+        first_time: float | None = None,
+    ) -> dict:
+        first_index = changes[0][0] if changes else None
+        return {
+            "status": status,
+            "eligible": status == "eligible",
+            "affected_count": len(changes),
+            "repeated_run_count": repeated_run_count,
+            "first_index": first_index,
+            "first_time": first_time if first_index is not None else None,
+            "changes": changes,
+            "blocker_code": blocker_code,
+            "message": message,
+        }
+
+    if not isinstance(beats, list):
+        return result(
+            "malformed",
+            blocker_code="beats_not_array",
+            message="Beat markers are not stored as an array.",
+        )
+    if not beats:
+        return result("no_defect")
+
+    measures: list[int] = []
+    times: list[float] = []
+    previous_time: float | None = None
+    for beat in beats:
+        if (
+            not isinstance(beat, dict)
+            or complete_json_identity(beat) is None
+            or not _finite_number(beat.get("time"))
+            or not _integer(beat.get("measure"))
+        ):
+            return result(
+                "malformed",
+                blocker_code="malformed_beat_marker",
+                message=(
+                    "Every beat marker must be a complete JSON object with a "
+                    "finite time and an integer measure number."
+                ),
+            )
+        event_time = float(beat["time"])
+        if previous_time is not None and event_time <= previous_time:
+            return result(
+                "malformed",
+                blocker_code="non_increasing_beat_times",
+                message=(
+                    "Beat marker times are not strictly increasing, so their "
+                    "measure progression cannot be normalized safely."
+                ),
+            )
+        previous_time = event_time
+        times.append(event_time)
+        measures.append(beat["measure"])
+
+    if any(measure == 0 or measure < -1 for measure in measures):
+        return result(
+            "ambiguous",
+            blocker_code="unsupported_measure_marker",
+            message=(
+                "Measure markers contain zero or a value below -1. Library "
+                "Doctor will not infer measure boundaries from that pattern."
+            ),
+        )
+
+    first_positive = next(
+        (index for index, measure in enumerate(measures) if measure > 0),
+        None,
+    )
+    if first_positive is None:
+        return result("no_defect")
+
+    positive_markers = [
+        (index, measure)
+        for index, measure in enumerate(measures)
+        if measure > 0
+    ]
+    has_subbeats_after_first_measure = any(
+        measure == -1 for measure in measures[first_positive + 1:]
+    )
+    if has_subbeats_after_first_measure:
+        # Canonical Feedpak grids have one positive marker per measure and use
+        # -1 for every interior beat. A unique, consecutive positive sequence
+        # therefore has no instance of this defect. Any repeated, skipped, or
+        # reversed positive marker in a mixed grid is too ambiguous to infer.
+        if all(
+            measure == positive_markers[position - 1][1] + 1
+            for position, (_index, measure) in enumerate(positive_markers[1:], 1)
+        ):
+            return result("no_defect")
+        return result(
+            "ambiguous",
+            blocker_code="mixed_measure_marker_pattern",
+            message=(
+                "Positive measure numbers and sub-beat markers form a mixed "
+                "or non-consecutive pattern. Library Doctor will not guess "
+                "which markers are real measure boundaries."
+            ),
+        )
+
+    # At this point only an optional leading -1 run can precede an all-positive
+    # sequence. Build its maximal same-measure runs in one bounded pass.
+    groups: list[tuple[int, int, int]] = []
+    group_start = first_positive
+    group_measure = measures[first_positive]
+    for index in range(first_positive + 1, len(measures)):
+        measure = measures[index]
+        if measure == group_measure:
+            continue
+        groups.append((group_start, index, group_measure))
+        if measure != group_measure + 1:
+            return result(
+                "ambiguous",
+                blocker_code="non_consecutive_measure_runs",
+                message=(
+                    "Positive measure runs skip, reverse, or otherwise fail "
+                    "to advance by exactly one. Library Doctor will not infer "
+                    "the intended measure progression."
+                ),
+            )
+        group_start = index
+        group_measure = measure
+    groups.append((group_start, len(measures), group_measure))
+
+    repeated_groups = [
+        group for group in groups if group[1] - group[0] > 1
+    ]
+    if not repeated_groups:
+        return result("no_defect")
+    if len(repeated_groups) < 2:
+        return result(
+            "ambiguous",
+            blocker_code="insufficient_repeated_measure_runs",
+            message=(
+                "Only one positive measure run repeats. That can be valid "
+                "authoring, so Library Doctor requires at least two repeated "
+                "runs before offering an automatic repair."
+            ),
+            repeated_run_count=len(repeated_groups),
+        )
+
+    changes = tuple(
+        (index, measure, -1)
+        for start, end, measure in repeated_groups
+        for index in range(start + 1, end)
+    )
+    return result(
+        "eligible",
+        repeated_run_count=len(repeated_groups),
+        changes=changes,
+        first_time=times[changes[0][0]],
+    )
+
+
 def repairable_tempo_event(value) -> bool:
     """Whether one tempo event is safe to retain, deduplicate, or reorder."""
     return bool(

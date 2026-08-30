@@ -77,6 +77,7 @@ def test_catalog_is_an_explicit_allowlist(repair):
         "chart.note-duplicates-chord",
         "chart.bend-points-out-of-order",
         "lyrics.out-of-order",
+        "timeline.repeated-measure-markers",
         "timeline.duplicate-beat",
         "timeline.beats-out-of-order",
         "timeline.duplicate-section",
@@ -90,7 +91,7 @@ def test_catalog_is_an_explicit_allowlist(repair):
     assert {item["safety"] for item in catalog} == {
         "safe_automatic", "review_required",
     }
-    assert sum(item["safety"] == "safe_automatic" for item in catalog) == 24
+    assert sum(item["safety"] == "safe_automatic" for item in catalog) == 25
     structural_repairs = {
         item["rule_code"]: (
             item["action_kind"], item["source_kind"], item["change_kind"]
@@ -178,6 +179,17 @@ def test_catalog_is_an_explicit_allowlist(repair):
     assert lyric_repair["source_kind"] == "lyrics"
     assert lyric_repair["item_name"] == "lyric timeline"
     assert lyric_repair["change_kind"] == "reorder"
+    measure_repair = repair.repair_for_rule(
+        "timeline.repeated-measure-markers"
+    )
+    assert measure_repair["source_kind"] == "timeline"
+    assert measure_repair["action_kind"] == "normalize_repeated_measure_markers"
+    assert measure_repair["item_name"] == "measure marker"
+    assert measure_repair["change_kind"] == "normalize_measure_markers"
+    assert repair.REPAIR_CATALOG_VERSION == "repairs-21"
+    assert repair._ALL_SAFE_RULE_ORDER.index(
+        "timeline.repeated-measure-markers"
+    ) < repair._ALL_SAFE_RULE_ORDER.index("timeline.duplicate-beat")
     beat_repair = repair.repair_for_rule("timeline.duplicate-beat")
     assert beat_repair["source_kind"] == "timeline"
     assert beat_repair["item_name"] == "beat marker"

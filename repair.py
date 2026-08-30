@@ -41,6 +41,7 @@ except ModuleNotFoundError:  # Tests and some plugin hosts load files by path.
         sys.modules[_eligibility_name] = _eligibility
         _eligibility_spec.loader.exec_module(_eligibility)
 assess_redundant_handshapes = _eligibility.assess_redundant_handshapes
+assess_repeated_measure_markers = _eligibility.assess_repeated_measure_markers
 complete_json_identity = _eligibility.complete_json_identity
 effective_tones_source = _eligibility.effective_tones_source
 repairable_tempo_event = _eligibility.repairable_tempo_event
@@ -99,6 +100,15 @@ StableSortLyricCues = _actions.StableSortLyricCues
 StableSortTimelineMarkers = _actions.StableSortTimelineMarkers
 StableSortTimedEvents = _actions.StableSortTimedEvents
 
+_measure_marker_name = "_library_doctor_measure_marker_repair"
+_measure_marker = sys.modules.get(_measure_marker_name)
+if _measure_marker is None:
+    _measure_marker_spec = importlib.util.spec_from_file_location(
+        _measure_marker_name, Path(__file__).resolve().with_name("measure_marker_repair.py")
+    )
+    _measure_marker = importlib.util.module_from_spec(_measure_marker_spec)
+    sys.modules[_measure_marker_name] = _measure_marker
+    _measure_marker_spec.loader.exec_module(_measure_marker)
 _catalog_name = "_library_doctor_repair_catalog"
 _catalog = sys.modules.get(_catalog_name)
 if _catalog is None:
@@ -158,7 +168,7 @@ if _transaction is None:
     _transaction_spec.loader.exec_module(_transaction)
 
 
-REPAIR_CATALOG_VERSION = "repairs-20"
+REPAIR_CATALOG_VERSION = "repairs-21"
 REPAIR_PLAN_SCHEMA = "library_doctor.repair_plan.v1"
 REVIEWED_PACKAGE_PLAN_SCHEMA = "library_doctor.reviewed_repair_plan.v1"
 REVIEWED_INSPECTION_SCHEMA = "library_doctor.reviewed_repair_inspection.v1"
@@ -230,6 +240,7 @@ _ALL_SAFE_RULE_ORDER = (
     "chart.zero-length-handshape",
     "chart.invalid-handshape-span",
     "lyrics.out-of-order",
+    "timeline.repeated-measure-markers",
     "timeline.duplicate-beat",
     "timeline.beats-out-of-order",
     "timeline.duplicate-section",
@@ -246,6 +257,7 @@ _CONDITIONAL_STRUCTURAL_RULES = frozenset({
     "timeline.time-signatures-out-of-order",
     "tones.duplicate-change",
     "tones.changes-out-of-order",
+    "timeline.repeated-measure-markers",
 })
 
 _ALL_REPAIR_DEFINITIONS = _REPAIR_DEFINITIONS + _MEDIA_REPAIR_DEFINITIONS
@@ -2475,6 +2487,12 @@ class RepairService:
 
         if source_kind != "timeline":
             return self._repair_member_paths(manifest, source_kind)
+
+        if rule_code == _measure_marker.RULE_CODE:
+            return _measure_marker.declared_beat_member_paths(
+                manifest, validate_member_path=_validate_member_path,
+                load_json=load_json, error_type=RepairPlanningError,
+            )
 
         if rule_code in {
             "timeline.duplicate-tempo",
@@ -5370,6 +5388,13 @@ def _plan_json_document(
         operations = _plan_bend_point_order(document)
     elif definition.rule_code == "lyrics.out-of-order":
         operations = _plan_lyric_cue_order(document)
+    elif definition.rule_code == _measure_marker.RULE_CODE:
+        operation = _measure_marker.plan_operation(
+            document,
+            assess=assess_repeated_measure_markers,
+            error_type=RepairPlanningError,
+        )
+        operations = [operation] if operation is not None else []
     elif definition.rule_code == "timeline.duplicate-beat":
         operations = _plan_exact_beat_duplicates(document)
     elif definition.rule_code == "timeline.beats-out-of-order":
@@ -5392,10 +5417,10 @@ def _plan_json_document(
         removed_count = sum(len(operation.remove_indices) for operation in operations)
         if definition.change_kind in {"reorder", "omit_empty"}:
             change_count = len(operations)
-        elif definition.change_kind == "normalize":
+        elif definition.change_kind in {"normalize", "normalize_measure_markers"}:
             change_count = sum(
                 operation.change_count for operation in operations
-                if isinstance(operation, NormalizeMutedNegativeFrets)
+                if hasattr(operation, "change_count")
             )
         else:
             change_count = removed_count
@@ -6278,6 +6303,15 @@ def _apply_operation(
             allowed_fields=frozenset(reviewed_definition.mutable_fields),
         )
         return
+    if operation.get("operation") == _measure_marker.OPERATION:
+        _measure_marker.apply_operation(
+            document,
+            operation,
+            normalized,
+            assess=assess_repeated_measure_markers,
+            error_type=RepairPlanningError,
+        )
+        return
     if operation.get("operation") == "normalize_muted_negative_frets":
         _apply_muted_fret_normalization_operation(
             document, operation, normalized
@@ -7100,6 +7134,7 @@ def _musical_position_count(
         | StableSortBendPoints | StableSortLyricCues
         | StableSortTimelineMarkers | StableSortTimedEvents
         | DeleteRedundantHandshapes | NormalizeMutedNegativeFrets
+        | _measure_marker.NormalizeRepeatedMeasureMarkers
     ],
     rule_code: str,
 ) -> int:
@@ -7126,6 +7161,12 @@ def _musical_position_count(
                 )
                 string = note.get("s") if isinstance(note, dict) else None
                 positions.add(_canonical_json({"t": note_time, "s": string}))
+        elif isinstance(operation, _measure_marker.NormalizeRepeatedMeasureMarkers):
+            beats = _value_at_path(document, operation.beat_array_path)
+            for change in operation.changes:
+                positions.add(_canonical_json({
+                    "time": beats[change.beat_index]["time"],
+                }))
         elif isinstance(operation, StableSortLyricCues):
             positions.add(_canonical_json({"path": [], "timeline": "lyrics"}))
         elif isinstance(operation, StableSortBendPoints):
@@ -7341,6 +7382,12 @@ def _summary(
         return (
             f"Normalize {change_count} negative {item_label} to fret 0 across "
             f"{arrays_affected} {list_label}; preserve every other stored property."
+        )
+    if change_kind == "normalize_measure_markers":
+        return (
+            f"Change {change_count} repeated {item_label} to sub-beat marker -1 "
+            f"across {arrays_affected} {list_label}; preserve every beat time "
+            "and other stored property."
         )
     if change_kind == "remove_redundant":
         return (

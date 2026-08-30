@@ -1,4 +1,16 @@
 export function createFormatters({ number }) {
+  function isMeasureMarkerNormalization(value) {
+    return value?.change_kind === 'normalize_measure_markers'
+      || value?.action_kind === 'normalize_repeated_measure_markers';
+  }
+
+  function memberScope(value) {
+    const count = Number(value?.member_count || 0);
+    return count > 0
+      ? ` across ${number(count)} song-data ${count === 1 ? 'file' : 'files'}`
+      : '';
+  }
+
   function pluralSongs(value) {
     const count = Number(value || 0);
     return `${number(count)} song${count === 1 ? '' : 's'}`;
@@ -26,6 +38,9 @@ export function createFormatters({ number }) {
   function plannedRepairChange(value) {
     const count = repairChangeCount(value);
     const itemName = value?.item_name || 'item';
+    if (isMeasureMarkerNormalization(value)) {
+      return `change ${number(count)} repeated positive measure marker${count === 1 ? '' : 's'} to the sub-beat marker -1`;
+    }
     if (value?.change_kind === 'omit_empty') {
       return `omit ${number(count)} empty optional ${itemName}${count === 1 ? '' : 's'}`;
     }
@@ -47,6 +62,9 @@ export function createFormatters({ number }) {
   function completedRepairChange(value) {
     const count = repairChangeCount(value);
     const itemName = value?.item_name || 'item';
+    if (isMeasureMarkerNormalization(value)) {
+      return `Changed ${number(count)} repeated positive measure marker${count === 1 ? '' : 's'} to the sub-beat marker -1${memberScope(value)} while preserving every beat timestamp, beat order, and other stored property`;
+    }
     if (value?.change_kind === 'omit_empty') {
       return `Omitted ${number(count)} empty optional ${itemName}${count === 1 ? '' : 's'} without deleting any musical event`;
     }

@@ -227,7 +227,10 @@ export function createBatchResultsView({
           'span',
           '',
           outcome.outcome === 'restored'
-            ? `${number(repairChangeCount(outcome))} safe song-data ${repairChangeCount(outcome) === 1 ? 'change was' : 'changes were'} restored to the original state.${outcome.preview_repaired ? ' The finalized generated preview remains.' : ''} ${outcome.cache_updated === false ? 'Displayed scan result needs a manual refresh. ' : ''}${outcome.package}`
+            ? outcome.change_kind === 'normalize_measure_markers'
+              || outcome.action_kind === 'normalize_repeated_measure_markers'
+              ? `${number(repairChangeCount(outcome))} original repeated positive measure-marker ${repairChangeCount(outcome) === 1 ? 'value was' : 'values were'} restored${Number(outcome.member_count || 0) ? ` across ${number(outcome.member_count)} song-data ${Number(outcome.member_count) === 1 ? 'file' : 'files'}` : ''}. The repeated measure-marker finding may return. ${outcome.cache_updated === false ? 'Displayed scan result needs a manual refresh. ' : ''}${outcome.package}`
+              : `${number(repairChangeCount(outcome))} safe song-data ${repairChangeCount(outcome) === 1 ? 'change was' : 'changes were'} restored to the original state.${outcome.preview_repaired ? ' The finalized generated preview remains.' : ''} ${outcome.cache_updated === false ? 'Displayed scan result needs a manual refresh. ' : ''}${outcome.package}`
             : `${outcome.message || 'No additional details.'} ${outcome.package}`,
         ));
         return row;

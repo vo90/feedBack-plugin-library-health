@@ -704,7 +704,7 @@ def test_link_next_continuation_does_not_create_same_fret_hopo_finding(
     )
 
     assert "review.same-fret-hopo" not in _codes(report)
-    assert report["validator_version"].startswith("rules-32:")
+    assert report["validator_version"].startswith("rules-33:")
 
 
 def test_targeted_reviewed_arrangement_validation_is_read_only(validator):
@@ -1514,6 +1514,142 @@ def test_negative_preroll_and_equal_timeline_times_are_allowed(tmp_path, validat
     ))
 
     assert not any(code.startswith("timeline.") for code in _codes(report))
+
+
+def test_repeated_measure_markers_are_a_safe_timeline_finding(
+    tmp_path, validator,
+):
+    manifest = _manifest(song_timeline="song_timeline.json")
+    timeline = {
+        "version": 1,
+        "beats": [
+            {"time": -1.0, "measure": -1, "future": "preserved"},
+            {"time": 0.0, "measure": 1},
+            {"time": 0.5, "measure": 1},
+            {"time": 1.0, "measure": 1},
+            {"time": 1.5, "measure": 2},
+            {"time": 2.0, "measure": 2},
+            {"time": 2.5, "measure": 3},
+        ],
+        "sections": [],
+    }
+
+    report = validator.validate_feedpak(_package(
+        tmp_path,
+        manifest=manifest,
+        files={"song_timeline.json": json.dumps(timeline)},
+    ))
+    finding = next(
+        item for item in report["findings"]
+        if item["code"] == "timeline.repeated-measure-markers"
+    )
+
+    assert finding["severity"] == "warning"
+    assert finding["affected_count"] == 3
+    assert finding["location"] == "song_timeline.json:beats[2]"
+    assert finding["time"] == 0.5
+    assert finding["rule"]["repairability"] == "safe_candidate"
+    assert "change only" in finding["rule"]["guidance"]
+    assert report["features"]["repair_eligibility"][
+        "timeline.repeated-measure-markers"
+    ] == {
+        "status": "automatic",
+        "reported_count": 1,
+        "safe_count": 1,
+        "unsafe_count": 0,
+        "reason_code": None,
+        "message": "",
+    }
+
+
+def test_correct_subbeat_measure_markers_do_not_produce_a_finding(
+    tmp_path, validator,
+):
+    timeline = {
+        "version": 1,
+        "beats": [
+            {"time": 0.0, "measure": 1},
+            {"time": 0.5, "measure": -1},
+            {"time": 1.0, "measure": -1},
+            {"time": 1.5, "measure": 2},
+            {"time": 2.0, "measure": -1},
+            {"time": 2.5, "measure": -1},
+        ],
+        "sections": [],
+    }
+
+    report = validator.validate_feedpak(_package(
+        tmp_path,
+        manifest=_manifest(song_timeline="song_timeline.json"),
+        files={"song_timeline.json": json.dumps(timeline)},
+    ))
+
+    assert "timeline.repeated-measure-markers" not in _codes(report)
+    assert "timeline.repeated-measure-markers" not in report[
+        "features"
+    ]["repair_eligibility"]
+
+
+def test_repeated_measure_marker_finding_uses_legacy_active_timeline(
+    tmp_path, validator,
+):
+    arrangement = {
+        "notes": [],
+        "chords": [],
+        "beats": [
+            {"time": 0.0, "measure": 8},
+            {"time": 0.5, "measure": 8},
+            {"time": 1.0, "measure": 9},
+            {"time": 1.5, "measure": 9},
+        ],
+        "sections": [],
+    }
+
+    report = validator.validate_feedpak(_package(
+        tmp_path, arrangement=arrangement,
+    ))
+    finding = next(
+        item for item in report["findings"]
+        if item["code"] == "timeline.repeated-measure-markers"
+    )
+
+    assert finding["location"] == "arrangements/lead.json:beats[1]"
+    assert finding["arrangement_id"] == "lead"
+    assert report["features"]["repair_eligibility"][
+        "timeline.repeated-measure-markers"
+    ]["status"] == "automatic"
+
+
+def test_repeated_measure_markers_in_jsonc_are_not_automatic(
+    tmp_path, validator,
+):
+    timeline = {
+        "version": 1,
+        "beats": [
+            {"time": 0.0, "measure": 1},
+            {"time": 0.5, "measure": 1},
+            {"time": 1.0, "measure": 2},
+            {"time": 1.5, "measure": 2},
+        ],
+        "sections": [],
+    }
+
+    report = validator.validate_feedpak(_package(
+        tmp_path,
+        manifest=_manifest(song_timeline="song_timeline.jsonc"),
+        files={"song_timeline.jsonc": json.dumps(timeline)},
+    ))
+    finding = next(
+        item for item in report["findings"]
+        if item["code"] == "timeline.repeated-measure-markers"
+    )
+    eligibility = report["features"]["repair_eligibility"][
+        "timeline.repeated-measure-markers"
+    ]
+
+    assert finding["rule"]["repairability"] == "manual"
+    assert eligibility["status"] == "unavailable"
+    assert eligibility["reason_code"] == "jsonc_requires_lossless_writer"
 
 
 def test_timeline_distinguishes_exact_duplicates_from_conflicting_repeated_times(
@@ -3110,4 +3246,4 @@ def test_mixed_inline_and_manifest_tone_issues_block_the_package_rule(
 
 
 def test_validator_rule_version_is_bumped_for_structural_findings(validator):
-    assert validator.VALIDATOR_VERSION.startswith("rules-32:")
+    assert validator.VALIDATOR_VERSION.startswith("rules-33:")

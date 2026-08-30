@@ -66,10 +66,29 @@ export function createRepairController({
       if (restoredChange.change_kind === 'normalize') {
         return `Restored ${number(repairChangeCount(restoredChange))} original negative muted-note fret ${repairChangeCount(restoredChange) === 1 ? 'value' : 'values'}. The repaired negative-mute finding is expected to return.`;
       }
+      if (restoredChange.change_kind === 'normalize_measure_markers'
+        || restoredChange.action_kind === 'normalize_repeated_measure_markers') {
+        const members = Number(restoredChange.member_count || 0);
+        const memberCopy = members
+          ? ` across ${number(members)} song-data ${members === 1 ? 'file' : 'files'}`
+          : '';
+        return `Restored ${number(repairChangeCount(restoredChange))} original repeated positive measure-marker ${repairChangeCount(restoredChange) === 1 ? 'value' : 'values'}${memberCopy}. The repeated measure-marker finding is expected to return.`;
+      }
       return `Restored the saved original song data for ${number(count)} safe ${count === 1 ? 'change' : 'changes'}. The related repaired findings are expected to return.`;
     }
     if (summaries.length > 1) {
-      const changes = summaries.map((item) => plannedRepairChange(item));
+      const changes = summaries.map((item) => {
+        const change = plannedRepairChange(item);
+        const members = Number(item.member_count || 0);
+        if (
+          members > 0
+          && (item.change_kind === 'normalize_measure_markers'
+            || item.action_kind === 'normalize_repeated_measure_markers')
+        ) {
+          return `${change} across ${number(members)} song-data ${members === 1 ? 'file' : 'files'}`;
+        }
+        return change;
+      });
       return `Applied ${number(summaries.length)} kinds of safe fix together, making ${number(count)} safe stored ${count === 1 ? 'change' : 'changes'}: ${changes.join('; ')}.`;
     }
     if (receipt.change_kind === 'combined' && summaries.length === 1) {
@@ -93,6 +112,10 @@ export function createRepairController({
     }
     if (receipt.change_kind === 'normalize') {
       return `${completedRepairChange(receipt)}${positions ? ` at ${number(positions)} musical ${positions === 1 ? 'position' : 'positions'}` : ''}.`;
+    }
+    if (receipt.change_kind === 'normalize_measure_markers'
+      || receipt.action_kind === 'normalize_repeated_measure_markers') {
+      return `${completedRepairChange(receipt)}.`;
     }
     if (receipt.change_kind === 'remove_redundant') {
       return `${completedRepairChange(receipt)}${positions ? ` at ${number(positions)} musical ${positions === 1 ? 'position' : 'positions'}` : ''}.`;
@@ -450,10 +473,16 @@ export function createRepairController({
 
   function confirmRestore(receipt, trigger, actions) {
     trigger.disabled = true;
+    const measureMarkerRepair = receipt.change_kind === 'normalize_measure_markers'
+      || receipt.action_kind === 'normalize_repeated_measure_markers';
+    const measureMarkerCount = repairChangeCount(receipt);
+    const measureMarkerMembers = Number(receipt.member_count || 0);
     const message = receipt.change_kind === 'replace_media'
         ? receipt.media?.creates_preview
           ? 'Undo will restore the exact original manifest and remove the generated preview. The missing-preview recommendation is expected to return. Every other Feedpak file is preserved.'
           : 'Undo will restore the exact original preview saved before conversion. The repaired preview recommendation is expected to return. Every other Feedpak file is preserved.'
+        : measureMarkerRepair
+        ? `Undo will restore ${number(measureMarkerCount)} original repeated positive measure-marker ${measureMarkerCount === 1 ? 'value' : 'values'}${measureMarkerMembers ? ` across ${number(measureMarkerMembers)} song-data ${measureMarkerMembers === 1 ? 'file' : 'files'}` : ''}. The repeated measure-marker finding is expected to return; every beat timestamp and other Feedpak file is preserved.`
         : receipt.rule_code === 'package.all-safe'
         ? 'Undo will restore all original song-data files saved before this combined repair. The repaired safe findings are expected to return. Other package files are preserved.'
         : 'Undo will restore the original song-data files saved before this repair. The repaired finding is expected to return. Other package files are preserved.';

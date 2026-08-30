@@ -103,12 +103,16 @@ export function createFindingView({ actions, document, make, number, state }) {
       ? `${number(arrangements.size)} arrangement${arrangements.size === 1 ? '' : 's'}`
       : `${number(sourceFiles.size || findings.length)} source ${sourceFiles.size === 1 ? 'file' : 'files'}`;
     const blockerCopy = repairBlockerCopy(report, representative, rule);
+    const measureMarkerRepair = definition.change_kind === 'normalize_measure_markers'
+      || definition.action_kind === 'normalize_repeated_measure_markers';
 
     const item = make('li', 'lh-finding lh-finding-repair-group');
     item.dataset.severity = representative.severity || 'warning';
     item.dataset.category = representative.category || 'validation';
     item.appendChild(make('strong', 'lh-finding-title', rule.title || definition.title || 'Safe repair available'));
-    const technicalSummary = definition.change_kind === 'omit_empty'
+    const technicalSummary = measureMarkerRepair
+      ? `${number(affected)} repeated positive measure ${affected === 1 ? 'marker appears' : 'markers appear'} on later beats across ${scope}. Library Doctor can change only those repeated values to the sub-beat marker -1 while preserving the first measure marker, every beat timestamp, beat order, and all other stored properties.`
+      : definition.change_kind === 'omit_empty'
       ? `${number(affected)} optional ${displayItem} ${affected === 1 ? 'stores' : 'store'} an explicit empty array across ${scope}. Omitting these empty root properties does not delete a musical event or position.`
       : definition.change_kind === 'normalize'
       ? `${number(affected)} pitchless string-mute ${affected === 1 ? 'position uses' : 'positions use'} a negative fret across ${scope}. Library Doctor can change only those fret values to 0 while preserving every other stored property.`

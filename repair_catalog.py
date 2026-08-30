@@ -422,6 +422,30 @@ SAFE_REPAIR_DEFINITIONS = (
         change_kind="reorder",
     ),
     RepairDefinition(
+        rule_code="timeline.repeated-measure-markers",
+        action_kind="normalize_repeated_measure_markers",
+        source_kind="timeline",
+        item_name="measure marker",
+        safety="safe_automatic",
+        title="Normalize repeated measure markers",
+        description=(
+            "Keep the first positive marker in each confidently identified "
+            "measure run and change only its later repeated markers to the "
+            "Feedpak sub-beat value -1. Every beat time, array position, and "
+            "other stored property is preserved across all declared beat grids."
+        ),
+        player_result=(
+            "FeedBack receives one numbered highway row per measure instead of "
+            "drawing a numbered row at every beat. The beat grid and playback "
+            "timing remain unchanged."
+        ),
+        user_value=(
+            "Affected Feedpaks can be repaired safely in place without "
+            "reconverting their source archive or changing any authored timing."
+        ),
+        change_kind="normalize_measure_markers",
+    ),
+    RepairDefinition(
         rule_code="timeline.duplicate-beat",
         action_kind="remove_exact_duplicate_beat_markers",
         source_kind="timeline",

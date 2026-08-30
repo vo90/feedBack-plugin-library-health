@@ -41,6 +41,11 @@
       "responsibility": "Define immutable repair action and catalog value objects.",
       "forbiddenImports": ["repair", "scanner", "fastapi"]
     },
+    "measure_marker_repair.py": {
+      "maxLines": 300,
+      "responsibility": "Plan and verify the closed repeated-measure-marker repair operation.",
+      "forbiddenImports": ["repair", "scanner", "fastapi"]
+    },
     "repair_workspace.py": {
       "maxLines": 300,
       "responsibility": "Own non-discoverable same-volume candidate workspaces and bounded orphan reconciliation.",
