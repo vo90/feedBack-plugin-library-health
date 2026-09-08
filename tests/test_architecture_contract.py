@@ -23,6 +23,8 @@ def test_backend_module_ownership_and_size_boundaries_are_explicit():
 
     assert contract["schema"] == "library_doctor.architecture_contract.v1"
     assert set(contract["modules"]) == {
+        "muted_fret_repair.py",
+        "bend_time_repair.py",
         "routes.py",
         "route_support.py",
         "scanner.py",
@@ -32,6 +34,7 @@ def test_backend_module_ownership_and_size_boundaries_are_explicit():
         "repair_catalog.py",
         "repair_actions.py",
         "measure_marker_repair.py",
+        "terminal_beat_repair.py",
         "repair_workspace.py",
         "repair_recovery.py",
         "repair_transaction.py",

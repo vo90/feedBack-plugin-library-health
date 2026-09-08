@@ -20,6 +20,34 @@ RepairDefinition = _actions.RepairDefinition
 
 SAFE_REPAIR_DEFINITIONS = (
     RepairDefinition(
+        rule_code="chart.bend-time-coordinates",
+        action_kind="normalize_bend_time_coordinates",
+        source_kind="arrangement", item_name="bend point time",
+        safety="safe_automatic", title="Normalize retained bend point times",
+        description=("Subtract the note onset only when every retained point is inside its "
+                     "absolute sounding window and the relative interpretation is impossible. "
+                     "Pre-onset, mixed and exceptional curves block the whole arrangement."),
+        player_result="The retained trajectory follows the existing note; no point or release is invented.",
+        user_value="Bend trajectories use the required note-relative times across every difficulty.",
+        change_kind="normalize_values",
+    ),
+    RepairDefinition(
+        rule_code="chart.muted-fret-sentinel",
+        action_kind="normalize_muted_fret_sentinels",
+        source_kind="arrangement",
+        item_name="muted fret sentinel",
+        safety="safe_automatic",
+        title="Normalize imported muted-fret sentinels",
+        description=(
+            "Replace fret 127 with 0 only on exact pitchless string mutes and "
+            "corroborated shared chord templates across every authored difficulty. "
+            "Ambiguous template uses block the entire arrangement repair."
+        ),
+        player_result="The same pitchless muted strikes remain; no physical fret is inferred.",
+        user_value="Chord guides stay within the instrument without changing timing or technique flags.",
+        change_kind="normalize_values",
+    ),
+    RepairDefinition(
         rule_code="chart.negative-muted-fret",
         action_kind="normalize_muted_negative_frets",
         source_kind="arrangement",
@@ -420,6 +448,17 @@ SAFE_REPAIR_DEFINITIONS = (
             "rewriting, or retiming any authored text."
         ),
         change_kind="reorder",
+    ),
+    RepairDefinition(
+        rule_code="timeline.terminal-duplicate-beats",
+        action_kind="remove_terminal_duplicate_beats",
+        source_kind="timeline",
+        item_name="terminal beat copy",
+        safety="safe_automatic",
+        title="Remove a verified duplicate beat tail",
+        description="Remove only a short exact terminal repetition, corroborated by an existing clean grid, across every affected stored copy.",
+        player_result="Stored grids become strictly increasing without retiming any beat or musical event.",
+        user_value="Arrangement-based tools can use the same verified grid; ambiguous cases remain for manual review.",
     ),
     RepairDefinition(
         rule_code="timeline.repeated-measure-markers",

@@ -36,6 +36,13 @@ It can:
 - repair several eligible songs through one reviewed batch; and
 - keep repair history, recovery information, and available Undo actions visible.
 
+A repeated terminal beat tail can be reported even when another stored grid
+allows normal playback. Its optional repair removes only one to three exact
+trailing copies, requires an existing matching clean grid, and checks event
+ends and supported package data first. Unknown references, extra files, and
+other timing defects require manual review. It does not infer the meaning of
+flags in the original conversion source.
+
 It deliberately does not:
 
 - guess how a chart was supposed to be authored;
@@ -156,6 +163,12 @@ A finding without a repair button is not a failure of the interface. It means
 Library Doctor cannot make that decision without guessing. Follow the displayed
 next step and use a Feedpak editor or replace the song when necessary.
 
+Imported fret-127 pitchless mutes and unambiguous absolute bend timestamps have
+separate safe repairs in scan results. When bend data is missing or ambiguous,
+reconvert the original song with an updated converter, or review and correct the
+original chart. Library Doctor cannot infer a trajectory from a bend amount
+alone, and a scan cannot identify every curve discarded by an older converter.
+
 ### Fix several songs
 
 After a complete scan, **Fix several songs** can collect the same narrowly safe
@@ -193,6 +206,11 @@ recovery safeguards as suggested repairs.
 Do not manually delete recovery files just to clear a warning. Use the actions
 shown under **Activity and recovery**, or keep both versions until you can
 review them safely.
+
+The original-PSARC bend recovery tools have been removed. Their saved reports
+and recovery records are left intact; existing repairs can still be reviewed
+and individually undone through **Activity and recovery**. Removing the tools
+does not revert any previous song changes.
 
 ## Privacy
 
@@ -258,7 +276,7 @@ contributors, and anyone who wants to inspect the safety boundaries.
 
 ## Safe repairs
 
-The automatic-safe song-data catalog contains 25 rule-specific repair actions.
+The automatic-safe song-data catalog contains 28 rule-specific repair actions.
 The repair allowlist removes exact duplicate standalone notes, members inside
 one chord, complete chord events, anchors, handshapes, beat markers, section
 markers, and drum hits. It can also remove a standalone note that exactly

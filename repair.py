@@ -42,6 +42,8 @@ except ModuleNotFoundError:  # Tests and some plugin hosts load files by path.
         _eligibility_spec.loader.exec_module(_eligibility)
 assess_redundant_handshapes = _eligibility.assess_redundant_handshapes
 assess_repeated_measure_markers = _eligibility.assess_repeated_measure_markers
+assess_muted_fret_sentinels = _eligibility.assess_muted_fret_sentinels
+assess_bend_time_coordinates = _eligibility.assess_bend_time_coordinates
 complete_json_identity = _eligibility.complete_json_identity
 effective_tones_source = _eligibility.effective_tones_source
 repairable_tempo_event = _eligibility.repairable_tempo_event
@@ -99,6 +101,17 @@ StableSortBendPoints = _actions.StableSortBendPoints
 StableSortLyricCues = _actions.StableSortLyricCues
 StableSortTimelineMarkers = _actions.StableSortTimelineMarkers
 StableSortTimedEvents = _actions.StableSortTimedEvents
+
+
+_terminal_name = "_library_doctor_terminal_beat_repair"
+_terminal = sys.modules.get(_terminal_name)
+if _terminal is None:
+    _terminal_spec = importlib.util.spec_from_file_location(
+        _terminal_name, Path(__file__).resolve().with_name("terminal_beat_repair.py")
+    )
+    _terminal = importlib.util.module_from_spec(_terminal_spec)
+    sys.modules[_terminal_name] = _terminal
+    _terminal_spec.loader.exec_module(_terminal)
 
 _measure_marker_name = "_library_doctor_measure_marker_repair"
 _measure_marker = sys.modules.get(_measure_marker_name)
@@ -168,7 +181,27 @@ if _transaction is None:
     _transaction_spec.loader.exec_module(_transaction)
 
 
-REPAIR_CATALOG_VERSION = "repairs-21"
+_muted_name = "_library_doctor_muted_fret_repair"
+_muted = sys.modules.get(_muted_name)
+if _muted is None:
+    _muted_spec = importlib.util.spec_from_file_location(
+        _muted_name, Path(__file__).resolve().with_name("muted_fret_repair.py")
+    )
+    _muted = importlib.util.module_from_spec(_muted_spec)
+    sys.modules[_muted_name] = _muted
+    _muted_spec.loader.exec_module(_muted)
+
+_bend_name = "_library_doctor_bend_time_repair"
+_bend = sys.modules.get(_bend_name)
+if _bend is None:
+    _bend_spec = importlib.util.spec_from_file_location(
+        _bend_name, Path(__file__).resolve().with_name("bend_time_repair.py")
+    )
+    _bend = importlib.util.module_from_spec(_bend_spec)
+    sys.modules[_bend_name] = _bend
+    _bend_spec.loader.exec_module(_bend)
+
+REPAIR_CATALOG_VERSION = "repairs-24"
 REPAIR_PLAN_SCHEMA = "library_doctor.repair_plan.v1"
 REVIEWED_PACKAGE_PLAN_SCHEMA = "library_doctor.reviewed_repair_plan.v1"
 REVIEWED_INSPECTION_SCHEMA = "library_doctor.reviewed_repair_inspection.v1"
@@ -230,6 +263,8 @@ _ALL_SAFE_RULE_ORDER = (
     "tones.duplicate-change",
     "tones.changes-out-of-order",
     "chart.negative-muted-fret",
+    "chart.muted-fret-sentinel",
+    "chart.bend-time-coordinates",
     "chart.bend-points-out-of-order",
     "chart.duplicate-chord-note",
     "chart.duplicate-chord",
@@ -241,6 +276,7 @@ _ALL_SAFE_RULE_ORDER = (
     "chart.invalid-handshape-span",
     "lyrics.out-of-order",
     "timeline.repeated-measure-markers",
+    "timeline.terminal-duplicate-beats",
     "timeline.duplicate-beat",
     "timeline.beats-out-of-order",
     "timeline.duplicate-section",
@@ -249,6 +285,8 @@ _ALL_SAFE_RULE_ORDER = (
 )
 
 _CONDITIONAL_STRUCTURAL_RULES = frozenset({
+    "chart.muted-fret-sentinel",
+    "chart.bend-time-coordinates",
     "chart.empty-phrases-key",
     "timeline.empty-arrangement-tempos-key",
     "timeline.duplicate-tempo",
@@ -258,6 +296,7 @@ _CONDITIONAL_STRUCTURAL_RULES = frozenset({
     "tones.duplicate-change",
     "tones.changes-out-of-order",
     "timeline.repeated-measure-markers",
+    "timeline.terminal-duplicate-beats",
 })
 
 _ALL_REPAIR_DEFINITIONS = _REPAIR_DEFINITIONS + _MEDIA_REPAIR_DEFINITIONS
@@ -1271,9 +1310,14 @@ class RepairService:
             for item in internal["_members"]
         }
         source_token = self._capture_package_token(package_path)
+        if internal.get("terminal_evidence"):
+            source_token["terminal_evidence"] = {p: h for p, h in internal["terminal_evidence"].items() if p not in originals}
+            source_token["terminal_inventory"] = internal["terminal_inventory"]
         self._emit_transaction_barrier(
             "source_captured", package=package_name, operation="repair"
         )
+        if internal.get("terminal_evidence"):
+            self._assert_package_identity(package_name, package_path, source_token)
         song_data_only = all(
             item.get("source_kind") in {
                 "arrangement", "timeline", "lyrics", "drum_tab"
@@ -2245,6 +2289,15 @@ class RepairService:
                 "The selected package moved or changed before it could be saved. Nothing was overwritten.",
             )
         if source_token is not None:
+            if "terminal_inventory" in source_token:
+                try:
+                    if _terminal.package_inventory(package_path) != source_token["terminal_inventory"]:
+                        raise ValueError("Package members changed.")
+                except (ValueError, OSError, zipfile.BadZipFile) as exc:
+                    raise RepairPlanningError("source_changed", "The terminal repair package inventory changed.") from exc
+            for member, digest in source_token.get("terminal_evidence", {}).items():
+                if hashlib.sha256(self._read_member(package_path, member, MAX_REPAIR_TEXT_BYTES)).hexdigest() != digest:
+                    raise RepairPlanningError("source_changed", "A terminal beat repair input changed; nothing was overwritten.")
             current_token = self._capture_package_token(package_path)
             expected_identity = (
                 source_token.get("kind"),
@@ -2488,7 +2541,7 @@ class RepairService:
         if source_kind != "timeline":
             return self._repair_member_paths(manifest, source_kind)
 
-        if rule_code == _measure_marker.RULE_CODE:
+        if rule_code in {_measure_marker.RULE_CODE, _terminal.RULE_CODE}:
             return _measure_marker.declared_beat_member_paths(
                 manifest, validate_member_path=_validate_member_path,
                 load_json=load_json, error_type=RepairPlanningError,
@@ -2636,6 +2689,28 @@ class RepairService:
                 "code": exc.code,
                 "message": str(exc),
             })
+        terminal_evidence = {}
+        terminal_inventory = []
+        if rule_code == _terminal.RULE_CODE:
+            try:
+                documents = {}
+                for path in _terminal.input_paths(manifest):
+                    path = _validate_member_path(path)
+                    raw_input = self._read_member(package_path, path, MAX_REPAIR_TEXT_BYTES)
+                    documents[path] = _parse_json(raw_input)
+                    _inspect_structure(documents[path])
+                    terminal_evidence[path] = hashlib.sha256(raw_input).hexdigest()
+                terminal_evidence["manifest.yaml"] = hashlib.sha256(
+                    self._read_member(package_path, "manifest.yaml", MAX_REPAIR_TEXT_BYTES)
+                ).hexdigest()
+                terminal_inventory = _terminal.package_inventory(package_path)
+                _terminal.check_inventory(manifest, terminal_inventory)
+                blocker = _terminal.assess_package(manifest, documents)
+                if blocker:
+                    raise ValueError(blocker)
+            except (ValueError, TypeError, OSError, zipfile.BadZipFile, RepairPlanningError) as exc:
+                blockers.append({"member_path": "manifest.yaml",
+                                 "code": "terminal_tail_requires_review", "message": str(exc)})
         for member_path in member_paths:
             try:
                 raw = self._read_member(package_path, member_path, MAX_REPAIR_TEXT_BYTES)
@@ -2687,6 +2762,7 @@ class RepairService:
             "validator_version": self._validator_version,
             "package": package_name,
             "rule_code": rule_code,
+            **({"terminal_evidence": terminal_evidence, "terminal_inventory": terminal_inventory} if rule_code == _terminal.RULE_CODE else {}),
             "member_plans": [
                 {"member_path": item["member_path"], "plan_id": item["plan"]["plan_id"]}
                 for item in planned
@@ -3585,6 +3661,8 @@ class RepairService:
             str, tuple[str, object | None, str | None]
         ] = {}
         source_blockers = []
+        terminal_evidence = {}
+        terminal_inventory = []
         for rule_code in requested_rule_codes:
             definition = _REPAIR_BY_RULE[rule_code]
             try:
@@ -3604,6 +3682,19 @@ class RepairService:
                     "message": str(exc),
                 })
                 continue
+            if rule_code == _terminal.RULE_CODE:
+                if not any(isinstance(parsed_json_cache.get(p, (None, None, None))[1], dict) and _terminal.tail_start(parsed_json_cache[p][1].get("beats")) is not None for p in resolved_paths):
+                    continue
+                checked = self._plan_package(package_path, package_name, rule_code)
+                if not checked["available"]:
+                    if not implicit_all:
+                        source_blockers.extend(checked["blockers"])
+                    continue
+                terminal_evidence = checked["terminal_evidence"]
+                terminal_inventory = checked["terminal_inventory"]
+            if implicit_all and rule_code in {"timeline.duplicate-beat", "timeline.beats-out-of-order"}:
+                if any(_terminal.tail_start((parsed_json_cache.get(path, (None, {}, None))[1] or {}).get("beats")) is not None for path in resolved_paths):
+                    continue
             if implicit_all and rule_code in _CONDITIONAL_STRUCTURAL_RULES:
                 preflight_blocked = False
                 for member_path in resolved_paths:
@@ -3800,6 +3891,7 @@ class RepairService:
             "package": package_name,
             "rule_code": ALL_SAFE_RULE_CODE,
             "requested_rule_codes": list(requested_rule_codes),
+            **({"terminal_evidence": terminal_evidence, "terminal_inventory": terminal_inventory} if terminal_evidence else {}),
             "rule_codes": rule_codes,
             "member_plans": [
                 {
@@ -5287,7 +5379,19 @@ def _plan_json_document(
 ) -> dict:
     """Plan one rule against an already parsed and structure-checked document."""
 
-    if definition.rule_code == "chart.negative-muted-fret":
+    if definition.rule_code == _bend.RULE_CODE:
+        operation = _bend.plan_operation(
+            document, assess=assess_bend_time_coordinates,
+            error_type=RepairPlanningError,
+        )
+        operations = [operation] if operation else []
+    elif definition.rule_code == _muted.RULE_CODE:
+        operation = _muted.plan_operation(
+            document, assess=assess_muted_fret_sentinels,
+            error_type=RepairPlanningError,
+        )
+        operations = [operation] if operation else []
+    elif definition.rule_code == "chart.negative-muted-fret":
         operations = _plan_muted_negative_frets(document)
     elif definition.rule_code == "chart.empty-phrases-key":
         operations = _plan_empty_root_array(document, "phrases")
@@ -5395,9 +5499,18 @@ def _plan_json_document(
             error_type=RepairPlanningError,
         )
         operations = [operation] if operation is not None else []
+    elif definition.rule_code == _terminal.RULE_CODE:
+        cut = _terminal.tail_start(document.get("beats"))
+        if cut is None and _terminal.non_strict(document.get("beats")):
+            raise RepairPlanningError("terminal_tail_requires_review", "This grid has an unrelated timing defect.")
+        operations = _plan_exact_beat_duplicates(document) if cut is not None else []
     elif definition.rule_code == "timeline.duplicate-beat":
+        if _terminal.tail_start(document.get("beats")) is not None:
+            raise RepairPlanningError("terminal_tail_requires_review", "Use the dedicated terminal beat repair for this pattern.")
         operations = _plan_exact_beat_duplicates(document)
     elif definition.rule_code == "timeline.beats-out-of-order":
+        if _terminal.tail_start(document.get("beats")) is not None:
+            raise RepairPlanningError("terminal_tail_requires_review", "Use the dedicated terminal beat repair for this pattern.")
         operations = _plan_timeline_marker_order(document, "beats")
     elif definition.rule_code == "timeline.duplicate-section":
         operations = _plan_exact_section_duplicates(document)
@@ -5417,7 +5530,7 @@ def _plan_json_document(
         removed_count = sum(len(operation.remove_indices) for operation in operations)
         if definition.change_kind in {"reorder", "omit_empty"}:
             change_count = len(operations)
-        elif definition.change_kind in {"normalize", "normalize_measure_markers"}:
+        elif definition.change_kind in {"normalize", "normalize_measure_markers", "normalize_values"}:
             change_count = sum(
                 operation.change_count for operation in operations
                 if hasattr(operation, "change_count")
@@ -6292,6 +6405,11 @@ def _apply_operation(
 ) -> None:
     if not isinstance(operation, dict):
         raise RepairPlanningError("invalid_plan", "The repair preview is invalid.")
+    if rule_code == _terminal.RULE_CODE:
+        cut = _terminal.tail_start(document.get("beats"))
+        expected = _plan_exact_beat_duplicates(document) if cut is not None else []
+        if len(expected) != 1 or expected[0].to_dict() != operation:
+            raise RepairPlanningError("invalid_plan", "Only the exact terminal suffix may be removed.")
     reviewed_definition = _reviewed.reviewed_repair_for_operation(
         operation.get("operation")
     )
@@ -6301,6 +6419,22 @@ def _apply_operation(
             operation,
             reviewed_paths,
             allowed_fields=frozenset(reviewed_definition.mutable_fields),
+        )
+        return
+    if operation.get("operation") == _bend.OPERATION:
+        if rule_code != _bend.RULE_CODE:
+            raise RepairPlanningError("invalid_plan", "The repair operation does not match its rule.")
+        _bend.apply_operation(
+            document, operation, assess=assess_bend_time_coordinates,
+            error_type=RepairPlanningError,
+        )
+        return
+    if operation.get("operation") == _muted.OPERATION:
+        if rule_code != _muted.RULE_CODE:
+            raise RepairPlanningError("invalid_plan", "The repair operation does not match its rule.")
+        _muted.apply_operation(
+            document, operation, assess=assess_muted_fret_sentinels,
+            error_type=RepairPlanningError,
         )
         return
     if operation.get("operation") == _measure_marker.OPERATION:
@@ -7140,7 +7274,13 @@ def _musical_position_count(
 ) -> int:
     positions: set[bytes] = set()
     for operation in operations:
-        if isinstance(operation, NormalizeMutedNegativeFrets):
+        if isinstance(operation, _bend.NormalizeBendTimes):
+            for path, _before, _after in operation.changes:
+                positions.add(_canonical_json({"path": path[:-3]}))
+        elif isinstance(operation, _muted.NormalizeMutedSentinels):
+            for path, _before, _after in operation.changes:
+                positions.add(_canonical_json({"path": path[:-1]}))
+        elif isinstance(operation, NormalizeMutedNegativeFrets):
             notes = _value_at_path(document, operation.note_array_path)
             chord_time = None
             if (
@@ -7217,7 +7357,7 @@ def _musical_position_count(
                     }
                 elif rule_code == "drums.duplicate-hit":
                     position = {"t": value["t"], "p": value["p"]}
-                elif rule_code == "timeline.duplicate-beat":
+                elif rule_code in {"timeline.duplicate-beat", _terminal.RULE_CODE}:
                     position = {
                         "time": value["time"],
                         "measure": value["measure"],
@@ -7367,6 +7507,8 @@ def _summary(
 ) -> str:
     item_label = noun if change_count == 1 else f"{noun}s"
     list_label = "list" if arrays_affected == 1 else "lists"
+    if change_kind == "normalize_values":
+        return f"Normalize {change_count} {item_label}; preserve every other stored property."
     if change_kind == "omit_empty":
         return (
             f"Omit {change_count} empty optional {item_label} across "

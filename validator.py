@@ -29,6 +29,8 @@ from jsonschema import Draft202012Validator
 
 try:
     from repair_eligibility import (
+        assess_muted_fret_sentinels,
+        assess_bend_time_coordinates,
         assess_repeated_measure_markers,
         assess_redundant_handshapes,
         complete_json_identity,
@@ -51,6 +53,8 @@ except ModuleNotFoundError:  # Tests and some plugin hosts load files by path.
         _eligibility = importlib.util.module_from_spec(_eligibility_spec)
         sys.modules[_eligibility_name] = _eligibility
         _eligibility_spec.loader.exec_module(_eligibility)
+    assess_muted_fret_sentinels = _eligibility.assess_muted_fret_sentinels
+    assess_bend_time_coordinates = _eligibility.assess_bend_time_coordinates
     assess_repeated_measure_markers = (
         _eligibility.assess_repeated_measure_markers
     )
@@ -69,8 +73,19 @@ except ModuleNotFoundError:  # Tests and some plugin hosts load files by path.
     )
 
 
+
+_terminal_name = "_library_doctor_terminal_beat_repair"
+_terminal = sys.modules.get(_terminal_name)
+if _terminal is None:
+    _terminal_spec = importlib.util.spec_from_file_location(
+        _terminal_name, Path(__file__).resolve().with_name("terminal_beat_repair.py")
+    )
+    _terminal = importlib.util.module_from_spec(_terminal_spec)
+    sys.modules[_terminal_name] = _terminal
+    _terminal_spec.loader.exec_module(_terminal)
+
 SPEC_REVISION = "52548b742f64c2a35052a141976ea1b7889f4b1a"
-VALIDATOR_VERSION = f"rules-33:feedpak-{SPEC_REVISION}"
+VALIDATOR_VERSION = f"rules-37:feedpak-{SPEC_REVISION}"
 SUPPORTED_MAJOR = 1
 SCHEMA_DIR = Path(__file__).resolve().parent / "schemas"
 MAX_TEXT_BYTES = 64 * 1024 * 1024
@@ -133,6 +148,8 @@ _RULE_TITLES = {
     "chart.note-duplicates-chord": "Standalone note duplicates a chord",
     "chart.bend-points-out-of-order": "Bend points out of order",
     "chart.negative-muted-fret": "Negative fret on a string mute",
+    "chart.muted-fret-sentinel": "Imported muted-fret sentinel",
+    "chart.bend-time-coordinates": "Retained bend point time coordinates",
     "chart.phrases-out-of-order": "Phrase windows out of order",
     "chart.conflicting-duplicate-note": "Conflicting notes on one string",
     "chart.string-conflict": "Overlapping notes on one string",
@@ -149,6 +166,8 @@ _RULE_TITLES = {
     "lyrics.out-of-order": "Lyric cues out of order",
     "timeline.duplicate-beat": "Identical duplicate beat marker",
     "timeline.repeated-measure-markers": "Measure number repeated across beats",
+    "timeline.terminal-duplicate-beats": "Repeated terminal beat tail",
+    "timeline.stored-beats-invalid": "Stored beat grid is not strictly increasing",
     "timeline.repeated-beat-time": "Repeated beat time has conflicting data",
     "timeline.duplicate-section": "Identical duplicate section marker",
     "timeline.repeated-section-time": "Repeated section time has conflicting data",
@@ -197,6 +216,8 @@ _RULE_AREAS = {
 
 _SAFE_REPAIR_CANDIDATES = {
     "chart.negative-muted-fret",
+    "chart.muted-fret-sentinel",
+    "chart.bend-time-coordinates",
     "chart.duplicate-note",
     "chart.duplicate-chord-note",
     "chart.duplicate-chord",
@@ -300,6 +321,14 @@ _RULE_EXPERIENCE = {
         "FeedBack can receive the same rhythm-grid instruction more than once, creating a repeated or zero-length beat interval.",
         "Keeping one identical beat marker produces a clean timing grid without changing its intended position or measure.",
     ),
+    "timeline.terminal-duplicate-beats": (
+        "Tools that select this stored arrangement grid may reject its backward terminal jump even if normal playback uses another grid.",
+        "A verified suffix-only repair preserves distinct beats and musical events while making the stored grid strictly increasing.",
+    ),
+    "timeline.stored-beats-invalid": (
+        "Tools that select this stored grid may reject it or interpret its timing inconsistently.",
+        "Manual review can determine the intended timing without guessing from the stored order.",
+    ),
     "timeline.repeated-measure-markers": (
         "FeedBack can draw a numbered fret row at every beat instead of only at real measure boundaries, crowding an otherwise empty highway with fret numbers.",
         "Keeping each real measure number once and marking only its repeated interior beats as sub-beats restores normal highway spacing without changing the beat times.",
@@ -353,7 +382,7 @@ _RULE_EXPERIENCE = {
         "Confirming or aligning them makes the intended chord or picking pattern clearer to the player.",
     ),
     "chart.conflicting-techniques": (
-        "The note asks FeedBack to show both a hammer-on and a pull-off, so renderer precedence can hide the authorâ€™s actual intent.",
+        "The note asks FeedBack to show both a hammer-on and a pull-off, so renderer precedence can hide the author's actual intent.",
         "Choosing one technique, a tap, or neither gives the player one explicit instruction while preserving the note itself.",
     ),
     "review.hopo-direction-mismatch": (
@@ -449,7 +478,7 @@ def _rule_experience(
     if category == "authoring_review":
         return (
             "This unusual tab pattern may be intentional, but it can feel awkward, misleading, or physically difficult when played.",
-            "Reviewing it confirms the author’s intent or improves playability without automatically treating unusual music as broken.",
+            "Reviewing it confirms the author's intent or improves playability without automatically treating unusual music as broken.",
         )
     if category == "feedback_compatibility":
         return (
@@ -463,12 +492,12 @@ def _rule_experience(
         )
     if area == "Audio and artwork":
         return (
-            "The song’s audio, preview, or artwork may be missing, inefficient, or displayed incorrectly in FeedBack.",
+            "The song's audio, preview, or artwork may be missing, inefficient, or displayed incorrectly in FeedBack.",
             "Correct media makes library browsing and song playback complete and reliable.",
         )
     if area in {"Song timeline", "Tones", "Rigs"}:
         return (
-            f"{area} may change at the wrong moment, fail to load, or behave differently from the author’s intent.",
+            f"{area} may change at the wrong moment, fail to load, or behave differently from the author's intent.",
             f"Correct {area.lower()} data restores predictable behavior during the song.",
         )
     if area in {"Feedpak structure", "Feedpak format", "Song information"}:
@@ -566,6 +595,12 @@ def rule_metadata(code: str, severity: str = "warning", category: str = "validat
             "The stored beat markers are identical. Keep the first marker and "
             "remove only later exact copies; leave conflicting beat data for review."
         )
+    elif code == _terminal.RULE_CODE:
+        repairability = "safe_candidate"
+        guidance = "Review a suffix-only repair after all stored grids, references and event ends have been checked."
+    elif code == "timeline.stored-beats-invalid":
+        repairability = "manual"
+        guidance = "Review this stored arrangement grid; do not sort or remove arbitrary beats."
     elif code == "timeline.repeated-measure-markers":
         repairability = "safe_candidate"
         guidance = (
@@ -793,7 +828,7 @@ class _BoundedSafeLoader(yaml.SafeLoader):
 
 def _bounded_text(value, limit: int = 1_000) -> str:
     text = str(value)
-    return text if len(text) <= limit else text[: limit - 1] + "…"
+    return text if len(text) <= limit else text[: limit - 1] + "\u2026"
 
 
 def _parse_jsonc(text: str):
@@ -3286,6 +3321,30 @@ def _validate_arrangement_semantics(
         check_fretted=check_fretted,
     ).validate()
     if check_fretted:
+        for code, assess, description in (
+            ("chart.muted-fret-sentinel", assess_muted_fret_sentinels,
+             "Fret 127 is an imported mute sentinel, not a playable fret; only exact pitchless mutes with corroborated template uses can be normalized."),
+            ("chart.bend-time-coordinates", assess_bend_time_coordinates,
+             "Retained bend points use times outside the note's relative sounding window; normalize only an unambiguous absolute-time interpretation."),
+        ):
+            assessment = assess(data)
+            if assessment["status"] == "no_defect":
+                continue
+            findings.add(
+                "warning", code,
+                description,
+                location=relpath, arrangement_id=arrangement_id,
+                affected_count=assessment["affected_count"],
+            )
+            automatic, reason_code, message = _ordinary_json_eligibility(relpath)
+            if assessment["status"] != "eligible":
+                automatic = False
+                reason_code = assessment["blocker_code"]
+                message = assessment["message"]
+            _merge_structural_repair_eligibility(
+                repair_eligibility, code, automatic=automatic,
+                reason_code=reason_code, message=message,
+            )
         hopo_candidates = find_hopo_review_candidates(data, member_path=relpath)
         if isinstance(review_difficulty_counts, dict):
             for code in (
@@ -4178,6 +4237,8 @@ def _validate_song_timeline_semantics(
         items = data.get(field)
         if not isinstance(items, list):
             continue
+        if field == "beats" and _terminal.tail_start(items) is not None:
+            continue  # Reported once by the all-stored-grid pass below.
 
         measure_assessment = (
             assess_repeated_measure_markers(items)
@@ -5525,6 +5586,30 @@ def validate_feedpak(
                         arrangement_id=arrangement_id,
                         fields=(field,),
                         repair_eligibility=features["repair_eligibility"],
+                    )
+
+            # Inspect stored copies as well as the host's effective timeline.
+            seen_grids = set()
+            active_beat_path = manifest.get("song_timeline") if song_timeline_overrides_legacy else legacy_timeline_sources.get("beats", (None,))[0]
+            for (grid_path, schema_name), document in loaded_json.items():
+                if schema_name not in {"arrangement.schema.json", "song-timeline.schema.json"} or grid_path in seen_grids:
+                    continue
+                seen_grids.add(grid_path)
+                beats = document.get("beats") if isinstance(document, dict) else None
+                cut = _terminal.tail_start(beats)
+                if cut is not None:
+                    findings.add(
+                        "warning", _terminal.RULE_CODE,
+                        "A stored beat grid repeats its last two beats in a short terminal tail. A package-wide safety review is required before removing it.",
+                        location=f"{grid_path}:beats[{cut}]",
+                        arrangement_id=next((e.get("id") for e in manifest.get("arrangements", []) if isinstance(e, dict) and e.get("file") == grid_path), None),
+                        time=beats[cut]["time"], affected_count=len(beats) - cut,
+                    )
+                elif grid_path != active_beat_path and _terminal.non_strict(beats):
+                    findings.add(
+                        "warning", "timeline.stored-beats-invalid",
+                        "A stored beat grid is not strictly increasing. This may affect tools that use this arrangement even when the active song grid is valid.",
+                        location=f"{grid_path}:beats",
                     )
 
             cover = manifest.get("cover")
